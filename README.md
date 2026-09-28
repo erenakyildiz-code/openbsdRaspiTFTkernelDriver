@@ -102,7 +102,30 @@ Current version does not support the touchscreen; it only puts an image
 row by row (portrait 320 wide x 480 tall, matching MADCTL 0x48).
 Generate it from any JPEG with `mkimg.py` (needs `pillow` and `numpy`):
 
-   [ the generator script ]
+```
+import numpy as np
+from PIL import Image
+
+W, H = 320,480
+
+img = Image.open("bloat.jpeg").convert("RGB").resize((W, H), Image.LANCZOS)
+a = np.asarray(img, dtype=np.uint32)
+
+r, g, b = a[..., 0], a[..., 1], a[..., 2]
+px = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)   # RGB565
+
+data = px.astype(">u2").tobytes()                    # big-endian, 2 bytes/px
+
+assert len(data) == W * H * 2, len(data)
+
+with open("img.h", "w") as f:
+    f.write("unsigned char frame_raw[] = {\n")
+    for i in range(0, len(data), 12):
+        f.write("  " + ",".join(f"0x{x:02x}" for x in data[i:i+12]) + ",\n")
+    f.write("};\n")
+
+print("img.h written,", len(data), "bytes")
+```
 
 Then rebuild and reinstall the kernel as above.
 
