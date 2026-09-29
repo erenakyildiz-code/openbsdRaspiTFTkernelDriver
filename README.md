@@ -40,7 +40,9 @@ userland name.
 The Pi device tree has no node for an SPI display, and OpenBSD can't load
 device tree overlays. So `tft` never looks at the FDT — instead, the last
 thing `bcmspi_attach()` does is fabricate an `spi_attach_args` and adopt the
-display by hand:
+display by hand. This code is **already at the end of `bcmspi_attach()` in
+`bcmspi.c`** — shown here only to explain the mechanism, you don't type it
+anywhere:
 
 ```c
 /* fixed child: our display (Pi DT has no spi child nodes) */
