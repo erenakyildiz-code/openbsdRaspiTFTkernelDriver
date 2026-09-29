@@ -1,164 +1,213 @@
-### OpenBSD 7.9 ARM64 TFT driver for ILI9486 TFT screen
+# OpenBSD TFT Framebuffer Kernel Driver (v1.0)
 
-Kernel driver that displays a static image on a 3.5" 480x320 SPI TFT
-module (ILI9486-based "clone" boards, e.g. Waveshare 3.5" / keidei type)
-attached to a Raspberry Pi running OpenBSD/arm64.
+A custom OpenBSD/arm64 kernel that turns a cheap ILI9486 SPI TFT into
+`/dev/tft0`:
 
-Current version does not support the touchscreen; it only puts an image
-(compiled into the kernel) onto the screen.
+```
+dd if=frame.rgb565 of=/dev/tft0 bs=307200 count=1    # image appears on the screen
+```
 
-### Hardware
+This is **deliberately not** a wsdisplay/fbdev integration. It's a ~300-line
+raw character device driver, written to be read and hacked on. One full frame
+(480×320 RGB565) per write, no readback, no mmap.
+
+Target: OpenBSD/arm64 on a Raspberry Pi (BCM2835 SPI). Developed against
+OpenBSD 7.x sources.
+
+## How it works
+
+```
+userspace   dd if=frame.rgb565 of=/dev/tft0
+                │ open(2) → major/minor from the mknod
+                ▼
+cdevsw      sys/arch/arm64/arm64/conf.c   (tft device entries)
+                │ device_lookup(minor)
+                ▼
+tft         sys/dev/fdt/tft.c             (frame buffer, ILI9486 init)
+                │ spi_write + GPIO bit-bang (DC/RST/BL)
+                ▼
+bcmspi      sys/dev/fdt/bcmspi.c          (SPI bus, GPIO, hand-attach)
+                │ polling PIO transfer
+                ▼
+hardware    BCM2835 SPI0 + GPIO → ILI9486 TFT (480×320, RGB565)
+```
+
+The kernel config (`TFT`) compiles the driver in; the `mknod` creates the
+userland name.
+
+## The interesting part: no device tree needed
+
+The Pi device tree has no node for an SPI display, and OpenBSD can't load
+device tree overlays. So `tft` never looks at the FDT — instead, the last
+thing `bcmspi_attach()` does is fabricate an `spi_attach_args` and adopt the
+display by hand:
+
+```c
+/* fixed child: our display (Pi DT has no spi child nodes) */
+sa.sa_name = "tft";
+sa.sa_cookie = sc;
+config_found(self, &sa, NULL);
+```
+
+The SPI parent also maps the GPIO block (it sits 0x4000 below SPI0), sets up
+the display's control pins, and locks the bus — so `tft.c` just uses what's
+already there. Pi-specific by construction; on another board you'd redo this
+bootstrap in that SoC's SPI driver.
+
+## Repository layout
+
+```
+openbsd-tft-kernel/
+├── README.md                 ← this file
+├── TFT                        ← kernel config
+├── mkframe.py                 ← PNG/JPG → RGB565 frame converter
+├── docs/
+│   └── display-photo.jpg      ← the screen actually working
+└── sys/dev/fdt/
+    ├── tft.c                  ← framebuffer driver
+    ├── img.h                  ← splash image (frame_raw), compiled in
+    ├── bcmspi.c               ← SPI bus driver (maps GPIO, hand-attaches tft)
+    └── bcmspi.h               ← shared softc/GPIO definitions
+```
+
+## Hardware
 
 - Raspberry Pi (developed/tested on Pi 4, BCM2711)
-- 3.5" 480x320 SPI TFT with ILI9486, on the 40-pin header
-- Wiring used by the driver:
+- 3.5" 480×320 SPI TFT with ILI9486, on the 40-pin header — the common
+  "74HC4094 shift-register clone" board (the init sequence's gamma/power
+  settings are tuned for it; a bare `0x11`/`0x29` sequence leaves these
+  panels half-awake)
 
-  | signal | GPIO | header pin |
-  |---|---|---|
-  | MOSI | 10 | 19 |
-  | MISO | 9  | 21 (unused, panel SDO not wired on most clones) |
-  | SCLK | 11 | 23 |
-  | CS (CE0) | 8 | 24 |
-  | DC | 24 | 18 |
-  | RST | 25 | 22 |
-  | BL | 18 | 12 |
+### Wiring
 
-### Repository contents
+| TFT pin | Pi GPIO | header pin | Notes |
+|---|---|---|---|
+| VCC | 3.3V | 1 | |
+| GND | GND | 6 | |
+| MOSI | GPIO 10 | 19 | |
+| MISO | GPIO 9 | 21 | unused, panel SDO not wired on most clones |
+| SCLK | GPIO 11 | 23 | |
+| CS | GPIO 8 (CE0) | 24 | `conf.sc_cs = 0` in tft.c |
+| DC | GPIO 24 | 18 | bit-banged by tft |
+| RST | GPIO 25 | 22 | bit-banged by tft |
+| BL | GPIO 18 | 12 | backlight, on at attach |
 
-- `bcmspi.c` / `bcmspi.h` — SPI0 controller driver (BCM2835/BCM2711)
-- `tft.c` — ILI9486 display driver, paints `frame_raw` at attach
-- `img.h` — the image, as a `frame_raw[]` byte array (RGB565)
-- `TFT` — example kernel config
+Pins are hardcoded as `PIN_DC/PIN_RST/PIN_BL` in `tft.c` and in the FSEL
+writes in `bcmspi.c` — change both if you rewire.
 
-### Build steps
+## Build
 
-1. Install OpenBSD 7.9 arm64 on the Pi.
+Prereqs: OpenBSD/arm64 with source tree matching your release (install the
+`src` set, or `cvs checkout -rOPENBSD_7_<x> src` into `/usr/src`).
 
-2. Fetch and extract the system sources (as root):
-   ```
-   cd /
-   ftp https://cdn.openbsd.org/pub/OpenBSD/7.9/src.tar.gz
-   ftp https://cdn.openbsd.org/pub/OpenBSD/7.9/sys.tar.gz
-   tar xzf src.tar.gz
-   tar xzf sys.tar.gz
-   ```
+```sh
+# 1. copy kernel config
+cp TFT /usr/src/sys/arch/arm64/conf/TFT
 
-3. Enable SPI in the Pi firmware (boot partition `config.txt`):
-   ```
-   dtparam=spi=on
-   ```
+# 2. copy the drivers
+cp sys/dev/fdt/tft.c sys/dev/fdt/img.h \
+   sys/dev/fdt/bcmspi.c sys/dev/fdt/bcmspi.h \
+   /usr/src/sys/dev/fdt/
 
-4. Copy the driver files:
-   ```
-   cp bcmspi.c bcmspi.h tft.c img.h /usr/src/sys/dev/fdt/
-   ```
+# 3. register the character device in the kernel's device switch.
+#    In /usr/src/sys/arch/arm64/arm64/conf.c add to devsw_init():
+#
+#        dev_init(cdevsw, tft, tft);
+#
+#    (one line — this gives tft its major number in /dev)
 
-5. Add the device declarations so the build and autoconfig know the
-   drivers (this is the easy-to-forget part). In
-   `/usr/src/sys/arch/arm64/conf/files.arm64` add:
-   ```
-   device	bcmspi: spi
-   attach	bcmspi at fdt
-   device	tft
-   attach	tft at bcmspi
-   ```
-
-6. Create the kernel config `/usr/src/sys/arch/arm64/conf/TFT`:
-   ```
-   include "../conf/GENERIC"
-
-   bcmspi* at fdt?
-   tft*	at bcmspi?
-   ```
-
-7. Generate the build directory and compile:
-   ```
-   cd /sys/arch/arm64/conf
-   config TFT
-   cd /sys/arch64/compile/TFT
-   make -j4
-   ```
-
-8. Install and reboot:
-   ```
-   cp /bsd /bsd.orig
-   cp bsd /bsd
-   reboot
-   ```
-
-9. Verify it attached:
-   ```
-   dmesg | grep -E 'bcmspi|tft'
-   ```
-   Expected:
-   ```
-   bcmspi0 at simplebus0: SPI0 controller
-   tft0 at bcmspi0
-   ```
-
-### Changing the image
-
-`img.h` must be exactly 320*480*2 = 307200 bytes of RGB565, big-endian,
-row by row (portrait 320 wide x 480 tall, matching MADCTL 0x48).
-Generate it from any JPEG with `mkimg.py` (needs `pillow` and `numpy`):
-
-```
-import numpy as np
-from PIL import Image
-
-W, H = 320,480
-
-img = Image.open("bloat.jpeg").convert("RGB").resize((W, H), Image.LANCZOS)
-a = np.asarray(img, dtype=np.uint32)
-
-r, g, b = a[..., 0], a[..., 1], a[..., 2]
-px = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)   # RGB565
-
-data = px.astype(">u2").tobytes()                    # big-endian, 2 bytes/px
-
-assert len(data) == W * H * 2, len(data)
-
-with open("img.h", "w") as f:
-    f.write("unsigned char frame_raw[] = {\n")
-    for i in range(0, len(data), 12):
-        f.write("  " + ",".join(f"0x{x:02x}" for x in data[i:i+12]) + ",\n")
-    f.write("};\n")
-
-print("img.h written,", len(data), "bytes")
+# 4. build
+cd /sys/arch/arm64/compile/TFT
+make obj && make config && make -j$(sysctl -n hw.ncpu)
 ```
 
-Then rebuild and reinstall the kernel as above.
+## Install
 
-For landscape 480x320 instead: set MADCTL to 0x68 in the init table of
-tft.c (adds the MV bit), regenerate the image as 480x320, and swap
-TFT_W/TFT_H.
+```sh
+doas cp /bsd /bsd.sp          # fallback: type "boot /bsd.sp" at the boot prompt
+doas make install
+doas reboot
+```
 
-### Troubleshooting
+Verify:
 
-- `dmesg` shows no `bcmspi0`: SPI node disabled in firmware -> check
-  `dtparam=spi=on`; or kernel was built without the config lines in
-  step 5/6.
-- `bcmspi0` present but no `tft0`: `config_found` path broken -> check
-  `tft* at bcmspi?` in the kernel config.
-- White screen, both lines in dmesg: panel is initialized but data is
-  garbled -> check `img.h` is exactly 307200 bytes; check the MADCTL
-  orientation note above.
-- Kernel panics or weirdness after attach: make sure the memcpy in
-  tft_attach is clamped to the framebuffer size.
+```
+dmesg | grep -E 'tft|bcmspi'
+```
 
-### Known quirks / porting notes
+`bcmspi` attaches and maps GPIO, then `tft` attaches, resets the panel, runs
+the ILI9486 init, and shows the compiled-in splash image.
 
-- The BCM2835/2711 SPI FIFO is word-granular: every 32-bit access to
-  SPI_FIFO shifts 4 bytes. bcmspi_transfer() packs bytes into words,
-  MSB first. Keep transfers a multiple of 4 bytes.
-- Most clone panels do not wire the ILI9486 SDO pin to the MISO header
-  pin, so register readback (e.g. Read ID) returns zeros. This is a
-  hardware limitation, not a driver bug.
-- The whole screen is repainted from a 300 KB malloc'd framebuffer in
-  kernel memory at every boot.
+## Creating /dev/tft0
 
-### TODO / roadmap
+OpenBSD has no devfs — the node is made by hand:
 
-- character device `/dev/tft0` so images can be pushed from userland
-- partial-window updates instead of full-frame repaint
-- XPT2046 / ADS7846 touchscreen support
+```sh
+ls -l /dev/tft0        # on the author's system; note the major:minor
+doas mknod /dev/tft0 c <major> <minor>
+doas chmod 666 /dev/tft0    # or tighten ownership to taste
+```
+
+The **major** number is the `tft` slot in the `cdevsw` table (from the
+`dev_init` line above), **minor** is the unit (0). Confirm with your own
+`ls -l` output before scripting this.
+
+## Using the driver
+
+Writes must be **exactly one full frame**: 480 × 320 × 2 = 307,200 bytes of
+little-endian RGB565, no header. Anything else returns `EINVAL`. The `dd`
+form below guarantees that.
+
+```sh
+# 1. convert any image to a frame (uses the repo's mkframe.py)
+python3 mkframe.py input.png frame.rgb565
+
+# 2. push it to the display
+dd if=frame.rgb565 of=/dev/tft0 bs=307200 count=1
+```
+
+(`cat frame.rgb565 > /dev/tft0` works too — the write just has to be one
+full 307,200-byte frame.)
+
+Backlight ioctl (see `tft.c`):
+
+```c
+int on = 1;
+ioctl(fd, TFTIOCBACKLIGHT, &on);
+```
+
+Boot-time splash via `/etc/rc.local`:
+
+```sh
+if [ -c /dev/tft0 ]; then
+    dd if=/home/devil/frame.rgb565 of=/dev/tft0 bs=307200 count=1
+fi
+```
+
+## TODO
+
+- **Touchscreen support.** These 3.5" clones carry an XPT2046/ADS7846
+  touch controller on the same SPI bus (usually MISO pin 21, interrupt on
+  GPIO or shared PENIRQ). Plan: attach it as a second `spi` child from
+  `bcmspi` (same hand-attach trick as `tft`), implement an OpenBSD
+  `wsmux`-compatible `wskbd`/`wsmouse`-style device or a simple character
+  device reporting raw X/Y/Z, and expose calibration via ioctl.
+- Readback / partial-frame writes (currently write-only, whole-frame).
+- mmap interface for shared-memory drawing.
+- Faster SPI clock once the transfer loop is DMA-capable.
+
+## Limitations
+
+- Write-only: no readback, no mmap. Exactly one frame per write, single
+  opener (`EBUSY` otherwise).
+- SPI at 4 MHz polled PIO — full-frame writes take a moment; this is a
+  proof-of-concept, not a video path.
+- Pi-only by design (hand-attach in `bcmspi`); porting = redoing that
+  bootstrap on another SoC's SPI driver.
+- No touchscreen (see TODO).
+- `img.h` embeds a splash image; replace it with your own artwork if
+  redistributing.
+
+## License
+
+ISC, same as OpenBSD.
