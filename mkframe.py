@@ -39,8 +39,8 @@ while row < 480:
     final += data[row * 640: (row + 1) * 640]
     row += 2
 
-# bottom half: the same even rows again
-row = 0
+# bottom half: odd rows 
+row = 1
 while row < 480:
     final += data[row * 640: (row + 1) * 640]
     row += 2
