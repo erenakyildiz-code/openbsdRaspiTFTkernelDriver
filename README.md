@@ -1,5 +1,7 @@
 # OpenBSD TFT Framebuffer Kernel Driver (v1.0)
 
+![The fish](img.jpg)
+
 A custom OpenBSD/arm64 kernel that turns a cheap ILI9486 SPI TFT into
 `/dev/tft0`:
 
