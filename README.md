@@ -62,8 +62,10 @@ openbsdRaspiTFTKernelDriver/
 ├── mkframe.py                 ← PNG/JPG → RGB565 frame converter
 ├── unnamed.jpg                ← the screen actually working
 └── usr/src/sys/
-    ├── arch/arm64/conf/
-    │   └── TFT                ← kernel config
+    ├── arch/arm64/
+    │   ├── arm64/conf.c       ← modified: tft registered at major 101
+    │   └── conf/
+    │       └── TFT            ← kernel config
     └── dev/fdt/
         ├── tft.c              ← framebuffer driver
         ├── img.h              ← splash image (frame_raw), compiled in
@@ -105,17 +107,24 @@ Prereqs: OpenBSD/arm64 with source tree matching your release (install the
 # 1. copy kernel config
 cp usr/src/sys/arch/arm64/conf/TFT /usr/src/sys/arch/arm64/conf/TFT
 
-# 2. copy the drivers
+# 2. copy the drivers and the modified conf.c
 cp usr/src/sys/dev/fdt/tft.c usr/src/sys/dev/fdt/img.h \
    usr/src/sys/dev/fdt/bcmspi.c usr/src/sys/dev/fdt/bcmspi.h \
    /usr/src/sys/dev/fdt/
+cp usr/src/sys/arch/arm64/arm64/conf.c /usr/src/sys/arch/arm64/arm64/conf.c
 
 # 3. register the character device in the kernel's device switch.
-#    In /usr/src/sys/arch/arm64/arm64/conf.c add to devsw_init():
+#    Use the modified conf.c from this repo (usr/src/sys/arch/arm64/arm64/conf.c)
+#    — two edits vs. stock. First, with the other cdev_decl lines:
 #
-#        dev_init(cdevsw, tft, tft);
+#        cdev_decl(tft);
 #
-#    (one line — this gives tft its major number in /dev)
+#    then in the cdevsw[] table, right after the joystick entry:
+#
+#        cdev_ujoy_init(NUJOY,ujoy), /* 100: USB joystick/gamecontroller */
+#        cdev_disk_init(1,tft),      /* 101: TFT LCD */
+#
+#    (majors are positional — the joystick sits at 100, so tft lands at 101)
 
 # 4. build
 cd /sys/arch/arm64/compile/TFT
@@ -144,14 +153,14 @@ the ILI9486 init, and shows the compiled-in splash image.
 OpenBSD has no devfs — the node is made by hand:
 
 ```sh
-ls -l /dev/tft0        # on the author's system; note the major:minor
-doas mknod /dev/tft0 c <major> <minor>
+doas mknod /dev/tft0 c 101 0
 doas chmod 666 /dev/tft0    # or tighten ownership to taste
 ```
 
-The **major** number is the `tft` slot in the `cdevsw` table (from the
-`dev_init` line above), **minor** is the unit (0). Confirm with your own
-`ls -l` output before scripting this.
+Major **101** is `tft`'s position in the `cdevsw` table (inserted after the
+joystick at 100 — see the Build step), minor **0** is the unit. Confirm with
+`ls -l /dev/tft0` on your built kernel; if your insertion point differs, use
+whatever major it shows.
 
 ## Using the driver
 
