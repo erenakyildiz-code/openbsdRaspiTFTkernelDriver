@@ -57,17 +57,18 @@ bootstrap in that SoC's SPI driver.
 ## Repository layout
 
 ```
-openbsd-tft-kernel/
+openbsdRaspiTFTKernelDriver/
 ├── README.md                 ← this file
-├── TFT                        ← kernel config
 ├── mkframe.py                 ← PNG/JPG → RGB565 frame converter
-├── docs/
-│   └── display-photo.jpg      ← the screen actually working
-└── sys/dev/fdt/
-    ├── tft.c                  ← framebuffer driver
-    ├── img.h                  ← splash image (frame_raw), compiled in
-    ├── bcmspi.c               ← SPI bus driver (maps GPIO, hand-attaches tft)
-    └── bcmspi.h               ← shared softc/GPIO definitions
+├── unnamed.jpg                ← the screen actually working
+└── usr/src/sys/
+    ├── arch/arm64/conf/
+    │   └── TFT                ← kernel config
+    └── dev/fdt/
+        ├── tft.c              ← framebuffer driver
+        ├── img.h              ← splash image (frame_raw), compiled in
+        ├── bcmspi.c           ← SPI bus driver (maps GPIO, hand-attaches tft)
+        └── bcmspi.h           ← shared softc/GPIO definitions
 ```
 
 ## Hardware
@@ -102,11 +103,11 @@ Prereqs: OpenBSD/arm64 with source tree matching your release (install the
 
 ```sh
 # 1. copy kernel config
-cp TFT /usr/src/sys/arch/arm64/conf/TFT
+cp usr/src/sys/arch/arm64/conf/TFT /usr/src/sys/arch/arm64/conf/TFT
 
 # 2. copy the drivers
-cp sys/dev/fdt/tft.c sys/dev/fdt/img.h \
-   sys/dev/fdt/bcmspi.c sys/dev/fdt/bcmspi.h \
+cp usr/src/sys/dev/fdt/tft.c usr/src/sys/dev/fdt/img.h \
+   usr/src/sys/dev/fdt/bcmspi.c usr/src/sys/dev/fdt/bcmspi.h \
    /usr/src/sys/dev/fdt/
 
 # 3. register the character device in the kernel's device switch.
